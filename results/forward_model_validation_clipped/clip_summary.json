@@ -1,0 +1,23 @@
+{
+  "input": "/Users/huahai/PARA/Project/XFCT/xfct_maskRecon/data/system_matrix/cij_5_3d_mod30_cmask_grid3x3_n9_p6_d1d25_lim0d5_xy60_z40_att_pmma.npz",
+  "output": "/Users/huahai/PARA/Project/XFCT/xfct_maskRecon/data/system_matrix/cij_5_3d_mod30_cmask_grid3x3_n9_p6_d1d25_lim0d5_xy60_z40_att_pmma_clipx80pad40.npz",
+  "shape": [
+    64000,
+    144000
+  ],
+  "nnz_after": 184933778,
+  "detector_z": 80,
+  "detector_x": 160,
+  "physical_detector_x": 80,
+  "pad_x": 40,
+  "physical_column_range_inclusive": [
+    40,
+    119
+  ],
+  "total_row_sum_before": 90.8153270668061,
+  "virtual_row_sum_before": 28.906742794927,
+  "virtual_fraction_before": 0.3183024686313407,
+  "total_row_sum_after": 61.90858427187911,
+  "virtual_row_sum_after": 0.0,
+  "virtual_fraction_after": 0.0
+}

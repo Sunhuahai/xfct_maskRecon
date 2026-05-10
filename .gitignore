@@ -1,6 +1,13 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+data/
+*.npy
+*.npz
+*.mat
+*.h5
+*.hdf5
+*.pkl
 results/smoke/
 results/smoke_default/
 results/system_matrix_smoke/
