@@ -1,0 +1,70 @@
+# Mask Protocol Comparison
+
+Protocols: equal acquisition time, equal incident dose, and equal detected counts.
+Dose is controlled by incident exposure scale, not by detected fluorescence count.
+
+| protocol | run | seed | counts | DL | invalid DL | ROI bias | deviance | residual structure |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| equal_acquisition_time | traditional_5 | 20260509 | 2.000e+05 | -8.4146 | True | 7.8904 | 8.882e+06 | 0.2897 |
+| equal_acquisition_time | traditional_5 | 20260510 | 2.004e+05 | -6.5758 | True | 8.0261 | 8.981e+06 | 0.2817 |
+| equal_acquisition_time | traditional_5 | 20260511 | 1.991e+05 | -6.3597 | True | 7.8746 | 8.816e+06 | 0.2740 |
+| equal_acquisition_time | traditional_15 | 20260509 | 6.012e+05 | -3.9697 | True | 33.2090 | 3.346e+08 | 0.9139 |
+| equal_acquisition_time | traditional_15 | 20260510 | 5.997e+05 | -4.0372 | True | 33.0915 | 3.335e+08 | 0.9139 |
+| equal_acquisition_time | traditional_15 | 20260511 | 5.992e+05 | -3.9574 | True | 33.0007 | 3.317e+08 | 0.9139 |
+| equal_acquisition_time | traditional_45 | 20260509 | 1.799e+06 | 23.7736 | True | 73.1226 | 2.042e+09 | 0.9190 |
+| equal_acquisition_time | traditional_45 | 20260510 | 1.798e+06 | 24.2148 | True | 73.1177 | 2.042e+09 | 0.9185 |
+| equal_acquisition_time | traditional_45 | 20260511 | 1.798e+06 | 23.9492 | False | 72.3914 | 2.020e+09 | 0.9189 |
+| equal_acquisition_time | grid9_p6_d1p25_5 | 20260509 | 1.375e+06 | 26.9611 | False | 4.6591 | 3.027e+08 | 0.9904 |
+| equal_acquisition_time | grid9_p6_d1p25_5 | 20260510 | 1.373e+06 | 26.9326 | False | 4.7180 | 3.047e+08 | 0.9905 |
+| equal_acquisition_time | grid9_p6_d1p25_5 | 20260511 | 1.375e+06 | 26.9142 | False | 4.6976 | 3.041e+08 | 0.9905 |
+| equal_acquisition_time | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260509 | 6.391e+05 | -2.9321 | True | 2.1389 | 4.765e+07 | 0.9408 |
+| equal_acquisition_time | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260510 | 6.402e+05 | -2.7964 | True | 2.1473 | 4.780e+07 | 0.8538 |
+| equal_acquisition_time | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260511 | 6.388e+05 | -2.8335 | True | 2.1350 | 4.759e+07 | 0.9585 |
+| equal_acquisition_time | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260509 | 3.285e+05 | -15.1899 | True | 5.8221 | 6.309e+07 | 0.9822 |
+| equal_acquisition_time | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260510 | 3.290e+05 | -15.3721 | True | 6.1461 | 7.041e+07 | 0.9831 |
+| equal_acquisition_time | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260511 | 3.290e+05 | -17.7960 | True | 5.1601 | 4.923e+07 | 0.9772 |
+| equal_acquisition_time | best_ring_ring_n3_d0d75_mind3 | 20260509 | 2.565e+05 | -8.5772 | True | 19.9825 | 5.043e+07 | 0.9169 |
+| equal_acquisition_time | best_ring_ring_n3_d0d75_mind3 | 20260510 | 2.559e+05 | -6.8903 | True | 13.5610 | 5.154e+07 | 0.8864 |
+| equal_acquisition_time | best_ring_ring_n3_d0d75_mind3 | 20260511 | 2.548e+05 | -6.7721 | True | 9.0236 | 5.182e+07 | 0.8912 |
+| equal_incident_dose | traditional_5 | 20260509 | 2.000e+05 | -8.4146 | True | 7.8904 | 8.882e+06 | 0.2897 |
+| equal_incident_dose | traditional_5 | 20260510 | 2.004e+05 | -6.5758 | True | 8.0261 | 8.981e+06 | 0.2817 |
+| equal_incident_dose | traditional_5 | 20260511 | 1.991e+05 | -6.3597 | True | 7.8746 | 8.816e+06 | 0.2740 |
+| equal_incident_dose | traditional_15 | 20260509 | 6.012e+05 | -3.9697 | True | 33.2090 | 3.346e+08 | 0.9139 |
+| equal_incident_dose | traditional_15 | 20260510 | 5.997e+05 | -4.0372 | True | 33.0915 | 3.335e+08 | 0.9139 |
+| equal_incident_dose | traditional_15 | 20260511 | 5.992e+05 | -3.9574 | True | 33.0007 | 3.317e+08 | 0.9139 |
+| equal_incident_dose | traditional_45 | 20260509 | 1.799e+06 | 23.7736 | True | 73.1226 | 2.042e+09 | 0.9190 |
+| equal_incident_dose | traditional_45 | 20260510 | 1.798e+06 | 24.2148 | True | 73.1177 | 2.042e+09 | 0.9185 |
+| equal_incident_dose | traditional_45 | 20260511 | 1.798e+06 | 23.9492 | False | 72.3914 | 2.020e+09 | 0.9189 |
+| equal_incident_dose | grid9_p6_d1p25_5 | 20260509 | 1.375e+06 | 26.9611 | False | 4.6591 | 3.027e+08 | 0.9904 |
+| equal_incident_dose | grid9_p6_d1p25_5 | 20260510 | 1.373e+06 | 26.9326 | False | 4.7180 | 3.047e+08 | 0.9905 |
+| equal_incident_dose | grid9_p6_d1p25_5 | 20260511 | 1.375e+06 | 26.9142 | False | 4.6976 | 3.041e+08 | 0.9905 |
+| equal_incident_dose | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260509 | 6.391e+05 | -2.9321 | True | 2.1389 | 4.765e+07 | 0.9408 |
+| equal_incident_dose | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260510 | 6.402e+05 | -2.7964 | True | 2.1473 | 4.780e+07 | 0.8538 |
+| equal_incident_dose | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260511 | 6.388e+05 | -2.8335 | True | 2.1350 | 4.759e+07 | 0.9585 |
+| equal_incident_dose | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260509 | 3.285e+05 | -15.1899 | True | 5.8221 | 6.309e+07 | 0.9822 |
+| equal_incident_dose | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260510 | 3.290e+05 | -15.3721 | True | 6.1461 | 7.041e+07 | 0.9831 |
+| equal_incident_dose | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260511 | 3.290e+05 | -17.7960 | True | 5.1601 | 4.923e+07 | 0.9772 |
+| equal_incident_dose | best_ring_ring_n3_d0d75_mind3 | 20260509 | 2.565e+05 | -8.5772 | True | 19.9825 | 5.043e+07 | 0.9169 |
+| equal_incident_dose | best_ring_ring_n3_d0d75_mind3 | 20260510 | 2.559e+05 | -6.8903 | True | 13.5610 | 5.154e+07 | 0.8864 |
+| equal_incident_dose | best_ring_ring_n3_d0d75_mind3 | 20260511 | 2.548e+05 | -6.7721 | True | 9.0236 | 5.182e+07 | 0.8912 |
+| equal_detected_counts | traditional_5 | 20260509 | 2.000e+05 | -8.4146 | True | 7.8904 | 8.882e+06 | 0.2897 |
+| equal_detected_counts | traditional_5 | 20260510 | 2.004e+05 | -6.5758 | True | 8.0261 | 8.981e+06 | 0.2817 |
+| equal_detected_counts | traditional_5 | 20260511 | 1.991e+05 | -6.3597 | True | 7.8746 | 8.816e+06 | 0.2740 |
+| equal_detected_counts | traditional_15 | 20260509 | 2.005e+05 | 4.2601 | False | 13.4505 | 3.040e+07 | 0.2529 |
+| equal_detected_counts | traditional_15 | 20260510 | 1.995e+05 | 4.4530 | False | 13.2851 | 2.997e+07 | 0.2612 |
+| equal_detected_counts | traditional_15 | 20260511 | 2.001e+05 | 4.5359 | False | 13.3288 | 3.002e+07 | 0.2553 |
+| equal_detected_counts | traditional_45 | 20260509 | 1.995e+05 | 4.5679 | False | 71.5562 | 1.884e+08 | 0.9061 |
+| equal_detected_counts | traditional_45 | 20260510 | 1.998e+05 | 4.3258 | False | 72.2202 | 1.897e+08 | 0.9017 |
+| equal_detected_counts | traditional_45 | 20260511 | 1.995e+05 | 4.4831 | False | 72.0859 | 1.858e+08 | 0.9061 |
+| equal_detected_counts | grid9_p6_d1p25_5 | 20260509 | 2.004e+05 | -26.9795 | True | 39.2768 | 2.325e+08 | 0.9879 |
+| equal_detected_counts | grid9_p6_d1p25_5 | 20260510 | 2.003e+05 | -27.3173 | True | 38.3587 | 2.263e+08 | 0.9880 |
+| equal_detected_counts | grid9_p6_d1p25_5 | 20260511 | 1.997e+05 | -27.3037 | True | 38.9447 | 2.308e+08 | 0.9879 |
+| equal_detected_counts | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260509 | 1.999e+05 | 50.5715 | True | -1.0573 | 3.349e+07 | 0.9250 |
+| equal_detected_counts | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260510 | 2.002e+05 | 59.8499 | True | -1.0646 | 3.386e+07 | 0.9518 |
+| equal_detected_counts | best_5hole_sparse_blue_noise_n5_d1d25_mind6_s0 | 20260511 | 1.995e+05 | 48.8408 | True | -1.0646 | 3.392e+07 | 0.9257 |
+| equal_detected_counts | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260509 | 2.004e+05 | -14.8261 | True | 3.4285 | 1.481e+08 | 0.9842 |
+| equal_detected_counts | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260510 | 1.996e+05 | -13.9323 | True | 3.7410 | 1.513e+08 | 0.9844 |
+| equal_detected_counts | best_7hole_sparse_blue_noise_n7_d0d75_mind3_s0 | 20260511 | 1.991e+05 | -14.6504 | True | 3.6101 | 1.490e+08 | 0.9844 |
+| equal_detected_counts | best_ring_ring_n3_d0d75_mind3 | 20260509 | 2.008e+05 | -93.2634 | True | 4.8226 | 2.533e+07 | 0.2733 |
+| equal_detected_counts | best_ring_ring_n3_d0d75_mind3 | 20260510 | 1.999e+05 | -123.1256 | True | 4.2647 | 2.282e+07 | 0.3106 |
+| equal_detected_counts | best_ring_ring_n3_d0d75_mind3 | 20260511 | 1.994e+05 | -188.2670 | True | 3.6032 | 2.073e+07 | 0.3516 |

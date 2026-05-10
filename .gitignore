@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+results/smoke/
+results/smoke_default/
+results/system_matrix_smoke/
