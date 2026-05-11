@@ -21,6 +21,26 @@ from src.reporting_figures import (
 from src.reporting_roi import scale_reconstruction_to_roi_reference
 
 
+def _roi_quality_save_fields(roi: dict[str, np.ndarray | float | object]) -> dict[str, object]:
+    return {
+        "detection_limit_valid": bool(roi.get("detection_limit_valid", False)),
+        "detection_limit_invalid": bool(roi.get("detection_limit_invalid", True)),
+        "detection_limit_quality": str(roi.get("detection_limit_quality", "invalid")),
+        "detection_limit_invalid_reason": str(
+            roi.get("detection_limit_invalid_reason", "missing quality check")
+        ),
+        "cnr_slope": float(roi.get("cnr_slope", np.nan)),
+        "cnr_intercept": float(roi.get("cnr_intercept", np.nan)),
+        "cnr_monotonic": bool(roi.get("cnr_monotonic", False)),
+        "background_mean": float(roi.get("background_mean", np.nan)),
+        "background_std": float(roi.get("background_std", np.nan)),
+        "quality_min_r_squared": float(roi.get("quality_min_r_squared", np.nan)),
+        "quality_background_std_min": float(
+            roi.get("quality_background_std_min", np.nan)
+        ),
+    }
+
+
 def run_reconstruction_and_save_figure(
     projection: np.ndarray,
     common: CommonConfig,
@@ -184,6 +204,7 @@ def run_reconstruction_and_save_figure(
             roi_yc=np.asarray(roi["yc"], dtype=float),
             roi_radius=np.asarray(roi["radius"], dtype=float),
             roi_r_squared=float(roi["r_squared"]),
+            **_roi_quality_save_fields(roi),
             solver_type="pseudo_mbir",
             projection_median_filter=bool(projection_median_filter),
             projection_median_filter_size=int(projection_median_filter_size),
@@ -347,6 +368,7 @@ def run_em_tv_and_save_figure(
             lambda_l1=float(lambda_l1),
             l1_step=float(l1_step),
             roi_r_squared=float(roi["r_squared"]),
+            **_roi_quality_save_fields(roi),
         )
 
     result["reconstruction"] = reconstruction

@@ -119,6 +119,8 @@ def save_roi_detection_figure(
     cnr = np.asarray(roi["fit_cnr"], dtype=float)
     polyf = np.asarray(roi["polyf"], dtype=float)
     dl = float(roi["DL"])
+    dl_valid = bool(roi.get("detection_limit_valid", False))
+    invalid_reason = str(roi.get("detection_limit_invalid_reason", ""))
     full_concentration = np.asarray(roi["concentration"], dtype=float)
     fit_line_x = np.linspace(0.0, float(np.max(full_concentration)), 200)
     cnr_fit = np.polyval(polyf, concentration)
@@ -145,7 +147,10 @@ def save_roi_detection_figure(
         label="Linear fit",
     )
     axes[1].axhline(4.0, color="#2ca02c", linestyle="--", alpha=0.85, label="CNR=4")
-    axes[1].set_title(f"Detection Limit\nDL={dl:.4f} mg/ml")
+    if dl_valid:
+        axes[1].set_title(f"Detection Limit\nDL={dl:.4f} mg/ml")
+    else:
+        axes[1].set_title("Detection Limit\ninvalid DL")
     axes[1].set_xlabel("Concentration (mg/ml)")
     axes[1].set_ylabel("CNR")
     axes[1].set_xlim(left=0.0)
@@ -162,6 +167,17 @@ def save_roi_detection_figure(
         fontsize=10,
         bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
     )
+    if not dl_valid:
+        axes[1].text(
+            0.20,
+            0.42,
+            invalid_reason.replace("; ", "\n"),
+            transform=axes[1].transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+        )
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)

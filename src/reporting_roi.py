@@ -3,6 +3,81 @@ from __future__ import annotations
 import numpy as np
 
 
+def evaluate_detection_limit_quality(
+    roi: dict[str, np.ndarray | float],
+    *,
+    min_r_squared: float = 0.80,
+    background_std_min: float = 1.0e-8,
+    monotonic_abs_tolerance: float = 1.0e-9,
+    monotonic_rel_tolerance: float = 0.0,
+) -> dict[str, object]:
+    """Return validity flags for CNR-derived detection-limit reporting."""
+
+    reasons: list[str] = []
+    dl = float(roi.get("DL", float("nan")))
+    r_squared = float(roi.get("r_squared", float("nan")))
+    polyf = np.asarray(roi.get("polyf", [float("nan"), float("nan")]), dtype=float).reshape(-1)
+    fit_cnr = np.asarray(roi.get("fit_cnr", []), dtype=float).reshape(-1)
+    roi_means = np.asarray(roi.get("V", []), dtype=float).reshape(-1)
+    roi_stds = np.asarray(roi.get("S", []), dtype=float).reshape(-1)
+
+    slope = float(polyf[0]) if polyf.size >= 1 else float("nan")
+    intercept = float(polyf[1]) if polyf.size >= 2 else float("nan")
+
+    finite_arrays = (
+        np.all(np.isfinite(fit_cnr))
+        and np.all(np.isfinite(roi_means))
+        and np.all(np.isfinite(roi_stds))
+    )
+    if not np.isfinite(dl) or not np.isfinite(slope) or not np.isfinite(intercept) or not np.isfinite(r_squared):
+        reasons.append("non-finite DL/CNR fit value")
+    if not finite_arrays:
+        reasons.append("non-finite ROI/CNR array value")
+    if np.isfinite(slope) and slope <= 0.0:
+        reasons.append("nonpositive CNR slope")
+    if np.isfinite(dl) and dl < 0.0:
+        reasons.append("negative detection limit")
+    if np.isfinite(r_squared) and r_squared < float(min_r_squared):
+        reasons.append(f"poor CNR linear fit R2<{float(min_r_squared):.2f}")
+
+    if fit_cnr.size >= 2 and np.all(np.isfinite(fit_cnr)):
+        tol = max(
+            float(monotonic_abs_tolerance),
+            float(monotonic_rel_tolerance) * max(float(np.max(np.abs(fit_cnr))), 1.0),
+        )
+        if np.any(np.diff(fit_cnr) < -tol):
+            reasons.append("non-monotonic CNR concentration response")
+        cnr_monotonic = bool(not np.any(np.diff(fit_cnr) < -tol))
+    else:
+        reasons.append("insufficient CNR points")
+        cnr_monotonic = False
+
+    background_mean = float(roi_means[0]) if roi_means.size else float("nan")
+    background_std = float(roi_stds[0]) if roi_stds.size else float("nan")
+    if (
+        not np.isfinite(background_mean)
+        or not np.isfinite(background_std)
+        or background_std <= float(background_std_min)
+    ):
+        reasons.append(f"unstable background estimate std<={float(background_std_min):.1e}")
+
+    valid = len(reasons) == 0
+    return {
+        "detection_limit_valid": bool(valid),
+        "detection_limit_invalid": bool(not valid),
+        "detection_limit_quality": "valid" if valid else "invalid",
+        "detection_limit_invalid_reasons": tuple(reasons),
+        "detection_limit_invalid_reason": "valid" if valid else "; ".join(reasons),
+        "cnr_slope": slope,
+        "cnr_intercept": intercept,
+        "cnr_monotonic": bool(cnr_monotonic),
+        "background_mean": background_mean,
+        "background_std": background_std,
+        "quality_min_r_squared": float(min_r_squared),
+        "quality_background_std_min": float(background_std_min),
+    }
+
+
 def _normalize_roi_layout(roi_layout: str) -> str:
     layout = str(roi_layout).strip().lower()
     if layout in {"experimental", "experiment", "exp", "real"}:
@@ -104,7 +179,7 @@ def roi_analysis(
     ss_tot = float(np.sum((fit_cnr - np.mean(fit_cnr)) ** 2))
     r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
 
-    return {
+    result = {
         "ff": ff,
         "CNR": cnr,
         "DL": dl,
@@ -121,6 +196,8 @@ def roi_analysis(
         "yc": yc,
         "radius": radii,
     }
+    result.update(evaluate_detection_limit_quality(result))
+    return result
 
 
 def scale_reconstruction_to_roi_reference(

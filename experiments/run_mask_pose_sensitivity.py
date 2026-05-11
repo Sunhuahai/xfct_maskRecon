@@ -34,21 +34,78 @@ from src.reporting_roi import roi_analysis
 RECON_SHAPE = (40, 60, 60)
 OUTPUT_ROOT = PROJECT_ROOT / "results" / "mask_pose_sensitivity"
 TOP_CANDIDATES = PROJECT_ROOT / "results" / "mask_design" / "top_candidates.json"
+PARETO_CANDIDATES = PROJECT_ROOT / "results" / "mask_design_corrected" / "pareto_candidates.json"
 CANDIDATE_DIR = PROJECT_ROOT / "data" / "masks" / "candidates"
 
 
-def _select_top_new_candidate() -> dict | None:
-    if TOP_CANDIDATES.exists():
-        payload = json.loads(TOP_CANDIDATES.read_text(encoding="utf-8"))
+def _candidate_lookup(candidate_dir: Path, pareto_path: Path) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for candidate in _load_candidate_pool(candidate_dir):
+        lookup[candidate["candidate_id"]] = candidate
+    if pareto_path.exists():
+        payload = json.loads(pareto_path.read_text(encoding="utf-8"))
+        for section in ("baselines", "primary_candidates"):
+            for row in payload.get(section, []):
+                path = row.get("json_path")
+                if path and Path(path).exists():
+                    candidate = load_candidate_json(path) | {"json_path": path}
+                    lookup[candidate["candidate_id"]] = candidate
+    return lookup
+
+
+def _add_candidate(candidates: list[dict], candidate: dict, seen: set[str]) -> None:
+    candidate = dict(candidate)
+    candidate["angle_count"] = 5
+    candidate_id = str(candidate["candidate_id"])
+    if candidate_id not in seen:
+        candidates.append(candidate)
+        seen.add(candidate_id)
+
+
+def _select_candidates(args: argparse.Namespace) -> list[dict]:
+    candidate_dir = Path(args.candidate_dir)
+    pareto_path = Path(args.pareto_candidates)
+    lookup = _candidate_lookup(candidate_dir, pareto_path)
+    selected: list[dict] = []
+    seen: set[str] = set()
+    if args.candidate_ids:
+        for item in [value.strip() for value in str(args.candidate_ids).split(",") if value.strip()]:
+            if item in {"grid9", "grid9_p6_d1p25_5", "grid3x3_n9_d1d25_mind6"}:
+                candidate = _grid9_candidate()
+            elif item in lookup:
+                candidate = lookup[item]
+            else:
+                raise KeyError(f"Unknown candidate id {item!r}.")
+            _add_candidate(selected, candidate, seen)
+        return selected
+
+    _add_candidate(selected, _grid9_candidate(), seen)
+    if pareto_path.exists():
+        payload = json.loads(pareto_path.read_text(encoding="utf-8"))
+        for row in payload.get("primary_candidates", []):
+            path = row.get("json_path")
+            if path and Path(path).exists():
+                _add_candidate(selected, load_candidate_json(path) | {"json_path": path}, seen)
+            if args.quick and len(selected) >= 2:
+                return selected
+            if args.candidate_limit is not None and len(selected) >= int(args.candidate_limit):
+                return selected
+        return selected
+
+    top_candidates = Path(args.top_candidates)
+    if top_candidates.exists():
+        payload = json.loads(top_candidates.read_text(encoding="utf-8"))
         for row in payload.get("top_candidates", []):
             if row.get("family") not in {"grid3x3", "single_center", "single_pinhole"}:
                 path = row.get("json_path")
                 if path and Path(path).exists():
-                    return load_candidate_json(path) | {"json_path": path}
-    for candidate in _load_candidate_pool(CANDIDATE_DIR):
+                    _add_candidate(selected, load_candidate_json(path) | {"json_path": path}, seen)
+                    return selected
+    for candidate in _load_candidate_pool(candidate_dir):
         if candidate["family"] in {"blue_noise", "sparse_random", "ring", "ring_two"}:
-            return candidate
-    return None
+            _add_candidate(selected, candidate, seen)
+            break
+    return selected
 
 
 def _candidate_label(candidate: dict) -> str:
@@ -81,7 +138,7 @@ def _operator(candidate: dict, args: argparse.Namespace, perturb: dict | None = 
     )
 
 
-def _perturbations(quick: bool) -> list[dict]:
+def _perturbations(quick: bool, profile: str = "full") -> list[dict]:
     items = [{"name": "nominal"}]
     for delta in [0.05, 0.1, 0.2]:
         items.append({"name": f"mask_dx_p{delta:g}", "mask_dx_mm": delta})
@@ -104,6 +161,31 @@ def _perturbations(quick: bool) -> list[dict]:
         items.append({"name": f"hole_diameter_m{delta:g}", "hole_diameter_delta_mm": -delta})
     for sigma in [0.02, 0.05]:
         items.append({"name": f"center_jitter_sigma{sigma:g}", "center_jitter_sigma_mm": sigma})
+    if profile == "focused":
+        keep = {
+            "nominal",
+            "mask_dx_p0.1",
+            "mask_dx_m0.1",
+            "mask_dz_p0.1",
+            "mask_dz_m0.1",
+            "detector_distance_p0.5",
+            "detector_distance_m0.5",
+            "angle_p0.5",
+            "angle_m0.5",
+            "hole_diameter_p0.05",
+            "hole_diameter_m0.05",
+            "center_jitter_sigma0.05",
+        }
+        return [item for item in items if item["name"] in keep]
+    if profile == "minimal":
+        keep = {
+            "nominal",
+            "mask_dx_p0.1",
+            "detector_distance_p0.5",
+            "angle_p0.5",
+            "center_jitter_sigma0.05",
+        }
+        return [item for item in items if item["name"] in keep]
     if quick:
         # Keep the required perturbation families while limiting repeated directions.
         keep = {"nominal"}
@@ -112,14 +194,19 @@ def _perturbations(quick: bool) -> list[dict]:
     return items
 
 
-def _roi_metrics(volume: np.ndarray) -> dict[str, float]:
+def _roi_metrics(volume: np.ndarray) -> dict[str, float | bool | str]:
     roi = roi_analysis(volume, slice_index=20, recon_size=RECON_SHAPE, roi_layout="simulation")
     polyf = np.asarray(roi["polyf"], dtype=float)
     v = np.asarray(roi["V"], dtype=float)
     return {
         "detection_limit_mgml": float(roi["DL"]),
+        "detection_limit_valid": bool(roi.get("detection_limit_valid", False)),
+        "detection_limit_invalid": bool(roi.get("detection_limit_invalid", True)),
+        "detection_limit_invalid_reason": str(roi.get("detection_limit_invalid_reason", "")),
+        "detection_limit_quality": str(roi.get("detection_limit_quality", "invalid")),
         "roi_r_squared": float(roi["r_squared"]),
         "cnr_slope": float(polyf[0]),
+        "cnr_monotonic": bool(roi.get("cnr_monotonic", False)),
         "roi_bias_proxy": float(np.mean(v) - 1.3333333333),
     }
 
@@ -175,14 +262,16 @@ def run_case(candidate: dict, perturb: dict, args: argparse.Namespace, nominal_o
             "projection_deviance": dev,
             "residual_structure_score": residual_score,
             "total_counts": float(np.sum(y)),
+            "num_iterations": int(args.num_iterations),
+            "perturbation_profile": str(args.perturbation_profile),
         }
     )
     return metrics
 
 
-def _write_outputs(rows: list[dict], output_root: Path) -> None:
+def _write_outputs(rows: list[dict], output_root: Path, csv_name: str, md_name: str) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
-    csv_path = output_root / "mask_pose_sensitivity.csv"
+    csv_path = output_root / csv_name
     if rows:
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -199,6 +288,8 @@ def _write_outputs(rows: list[dict], output_root: Path) -> None:
     lines = [
         "# Mask Pose and Geometry Sensitivity",
         "",
+        "Reconstructions use the nominal forward model while expected projection data are generated with each listed perturbation. DL changes are interpreted only when both nominal and perturbed rows pass the shared CNR quality gate.",
+        "",
         "| candidate | perturbation | DL change | ROI bias change | deviance increase | residual structure |",
         "| --- | --- | ---: | ---: | ---: | ---: |",
     ]
@@ -208,17 +299,20 @@ def _write_outputs(rows: list[dict], output_root: Path) -> None:
         dl_change = float(row["detection_limit_mgml"]) - base["dl"]
         bias_change = float(row["roi_bias_proxy"]) - base["bias"]
         dev_increase = float(row["projection_deviance"]) - base["dev"]
-        if row["perturbation"] != "nominal":
+        dl_valid = bool(row.get("detection_limit_valid", False))
+        nominal_valid = bool(next((r.get("detection_limit_valid", False) for r in rows if r["candidate_id"] == row["candidate_id"] and r["perturbation"] == "nominal"), False))
+        dl_change_text = f"{dl_change:.4f}" if dl_valid and nominal_valid else "invalid"
+        if row["perturbation"] != "nominal" and dl_valid and nominal_valid:
             aggregates.setdefault(row["candidate_id"], []).append(abs(dl_change))
         lines.append(
-            f"| {row['candidate_id']} | {row['perturbation']} | {dl_change:.4f} | "
+            f"| {row['candidate_id']} | {row['perturbation']} | {dl_change_text} | "
             f"{bias_change:.4f} | {dev_increase:.3e} | {row['residual_structure_score']:.4f} |"
         )
     if len(aggregates) >= 2:
         lines.extend(["", "## Robustness Comparison", ""])
         for candidate_id, values in aggregates.items():
             lines.append(f"- `{candidate_id}` mean absolute DL change: {float(np.mean(values)):.4f} mg/ml")
-    output_root.joinpath("mask_pose_sensitivity.md").write_text("\n".join(lines), encoding="utf-8")
+    output_root.joinpath(md_name).write_text("\n".join(lines), encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -230,7 +324,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--protocols", default="", help="Accepted for workflow compatibility.")
     parser.add_argument("--recon-methods", default="poisson_tv")
     parser.add_argument("--matrix-mode", choices=["explicit", "matrix_free", "auto"], default="matrix_free")
+    parser.add_argument("--candidate-dir", default=str(CANDIDATE_DIR))
+    parser.add_argument("--top-candidates", default=str(TOP_CANDIDATES))
+    parser.add_argument("--pareto-candidates", default=str(PARETO_CANDIDATES))
+    parser.add_argument(
+        "--candidate-ids",
+        default="",
+        help="Comma-separated corrected mask candidate IDs to test.",
+    )
     parser.add_argument("--output-root", default=str(OUTPUT_ROOT))
+    parser.add_argument("--summary-csv-name", default="mask_pose_sensitivity.csv")
+    parser.add_argument("--summary-md-name", default="mask_pose_sensitivity.md")
+    parser.add_argument("--perturbation-profile", choices=["full", "focused", "minimal"], default="full")
     parser.add_argument("--num-iterations", type=int, default=15)
     parser.add_argument("--beta", type=float, default=1.0e-4)
     parser.add_argument("--target-counts", type=float, default=2.0e5)
@@ -247,10 +352,7 @@ def main() -> None:
         args.num_iterations = min(int(args.num_iterations), 5)
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
-    candidates = [_grid9_candidate()]
-    new_candidate = _select_top_new_candidate()
-    if new_candidate is not None:
-        candidates.append(new_candidate)
+    candidates = _select_candidates(args)
     truth = make_roi_detection_phantom(RECON_SHAPE)
     rows: list[dict] = []
     for candidate in candidates:
@@ -258,11 +360,11 @@ def main() -> None:
         lam0 = nominal_base.forward(truth.reshape(-1), support_mode="physical_padded")
         scale = float(args.target_counts) / max(float(np.sum(lam0)), EPS)
         nominal = ScaledOperator(nominal_base, scale)
-        for perturb in _perturbations(bool(args.quick)):
+        for perturb in _perturbations(bool(args.quick), str(args.perturbation_profile)):
             print(f"{candidate['candidate_id']}: {perturb['name']}")
             rows.append(run_case(candidate, perturb, args, nominal, truth))
-    _write_outputs(rows, output_root)
-    print(f"Pose sensitivity summary: {output_root / 'mask_pose_sensitivity.csv'}")
+    _write_outputs(rows, output_root, str(args.summary_csv_name), str(args.summary_md_name))
+    print(f"Pose sensitivity summary: {output_root / str(args.summary_csv_name)}")
 
 
 if __name__ == "__main__":

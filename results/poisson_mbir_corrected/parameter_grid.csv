@@ -1,0 +1,7 @@
+candidate_id,family,seed,beta,num_iterations,support_mode,data_domain,aperture_mode,aperture_samples,attenuation,target_counts,background
+grid9_p6_d1p25_5,grid3x3,20260509,1e-05,30,physical_padded,real_grid9_projection_padded_physical_detector,finite,8,pmma,200000.0,1e-06
+grid9_p6_d1p25_5,grid3x3,20260509,0.0001,30,physical_padded,real_grid9_projection_padded_physical_detector,finite,8,pmma,200000.0,1e-06
+blue_noise_n3_d1d25_mind3_s1,blue_noise,20260509,1e-05,30,physical_padded,synthetic_matched_poisson,finite,8,pmma,200000.0,1e-06
+blue_noise_n3_d1d25_mind3_s1,blue_noise,20260509,0.0001,30,physical_padded,synthetic_matched_poisson,finite,8,pmma,200000.0,1e-06
+ring_n7_d1d25_mind3,ring,20260509,1e-05,30,physical_padded,synthetic_matched_poisson,finite,8,pmma,200000.0,1e-06
+ring_n7_d1d25_mind3,ring,20260509,0.0001,30,physical_padded,synthetic_matched_poisson,finite,8,pmma,200000.0,1e-06

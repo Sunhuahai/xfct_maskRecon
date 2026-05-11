@@ -37,7 +37,9 @@ from src.reporting_roi import roi_analysis
 RECON_SHAPE = (40, 60, 60)
 OUTPUT_ROOT = PROJECT_ROOT / "results" / "protocol_comparison"
 TOP_CANDIDATES = PROJECT_ROOT / "results" / "mask_design" / "top_candidates.json"
+PARETO_CANDIDATES = PROJECT_ROOT / "results" / "mask_design_corrected" / "pareto_candidates.json"
 CANDIDATE_DIR = PROJECT_ROOT / "data" / "masks" / "candidates"
+GEOMETRY_METRIC_CACHE: dict[tuple, dict[str, float]] = {}
 
 
 def _single_candidate(name: str, angle_count: int) -> dict:
@@ -52,18 +54,73 @@ def _single_candidate(name: str, angle_count: int) -> dict:
     }
 
 
-def _load_top_candidate_by(predicate) -> dict | None:
-    if TOP_CANDIDATES.exists():
-        payload = json.loads(TOP_CANDIDATES.read_text(encoding="utf-8"))
+def _candidate_lookup(candidate_dir: Path, pareto_path: Path) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for candidate in _load_candidate_pool(candidate_dir):
+        lookup[candidate["candidate_id"]] = candidate
+    if pareto_path.exists():
+        payload = json.loads(pareto_path.read_text(encoding="utf-8"))
+        for section in ("baselines", "primary_candidates"):
+            for row in payload.get(section, []):
+                path = row.get("json_path")
+                if path and Path(path).exists():
+                    candidate = load_candidate_json(path) | {"json_path": path}
+                    lookup[candidate["candidate_id"]] = candidate
+    return lookup
+
+
+def _load_top_candidate_by(predicate, top_candidates: Path, candidate_dir: Path) -> dict | None:
+    if top_candidates.exists():
+        payload = json.loads(top_candidates.read_text(encoding="utf-8"))
         for row in payload.get("top_candidates", []):
             if predicate(row):
                 path = row.get("json_path")
                 if path and Path(path).exists():
                     return load_candidate_json(path) | {"json_path": path}
-    for candidate in _load_candidate_pool(CANDIDATE_DIR):
+    for candidate in _load_candidate_pool(candidate_dir):
         if predicate(candidate):
             return candidate
     return None
+
+
+def _add_mask_candidate(runs: list[dict], candidate: dict, seen: set[str]) -> None:
+    candidate = dict(candidate)
+    candidate["angle_count"] = 5
+    candidate_id = str(candidate["candidate_id"])
+    if candidate_id not in seen:
+        runs.append(candidate)
+        seen.add(candidate_id)
+
+
+def _select_corrected_masks(args: argparse.Namespace) -> list[dict]:
+    candidate_dir = Path(args.candidate_dir)
+    pareto_path = Path(args.pareto_candidates)
+    lookup = _candidate_lookup(candidate_dir, pareto_path)
+    selected: list[dict] = []
+    seen: set[str] = set()
+    if args.candidate_ids:
+        for item in [value.strip() for value in str(args.candidate_ids).split(",") if value.strip()]:
+            if item in {"grid9", "grid9_p6_d1p25_5", "grid3x3_n9_d1d25_mind6"}:
+                candidate = _grid9_candidate()
+            elif item in lookup:
+                candidate = lookup[item]
+            else:
+                raise KeyError(f"Unknown candidate id {item!r}.")
+            _add_mask_candidate(selected, candidate, seen)
+        return selected
+
+    _add_mask_candidate(selected, _grid9_candidate(), seen)
+    if pareto_path.exists():
+        payload = json.loads(pareto_path.read_text(encoding="utf-8"))
+        for row in payload.get("primary_candidates", []):
+            path = row.get("json_path")
+            if path and Path(path).exists():
+                _add_mask_candidate(selected, load_candidate_json(path) | {"json_path": path}, seen)
+            if args.quick and len(selected) >= 2:
+                return selected
+            if args.candidate_limit is not None and len(selected) >= 1 + int(args.candidate_limit):
+                return selected
+    return selected
 
 
 def _select_runs(args: argparse.Namespace) -> list[dict]:
@@ -71,10 +128,14 @@ def _select_runs(args: argparse.Namespace) -> list[dict]:
         _single_candidate("traditional_5", 5),
         _single_candidate("traditional_15", 15),
         _single_candidate("traditional_45", 45),
-        _grid9_candidate(),
     ]
-    runs[-1]["candidate_id"] = "grid9_p6_d1p25_5"
-    runs[-1]["angle_count"] = 5
+    seen = {r["candidate_id"] for r in runs}
+    for candidate in _select_corrected_masks(args):
+        _add_mask_candidate(runs, candidate, seen)
+    if args.candidate_ids or any(run.get("family") not in {"single_pinhole", "grid3x3"} for run in runs):
+        return runs
+
+    # Fallback for legacy result trees if corrected Pareto outputs are absent.
     selectors = [
         lambda c: c.get("family") in {"blue_noise", "sparse_random"} and int(c.get("hole_count", len(c.get("hole_centers_mm", [])))) == 5,
         lambda c: c.get("family") in {"blue_noise", "sparse_random"} and int(c.get("hole_count", len(c.get("hole_centers_mm", [])))) == 7,
@@ -82,9 +143,8 @@ def _select_runs(args: argparse.Namespace) -> list[dict]:
         lambda c: c.get("family") == "ura_mura_inspired",
     ]
     labels = ["best_5hole_sparse", "best_7hole_sparse", "best_ring", "ura_mura_diagnostic"]
-    seen = {r["candidate_id"] for r in runs}
     for label, selector in zip(labels, selectors):
-        cand = _load_top_candidate_by(selector)
+        cand = _load_top_candidate_by(selector, Path(args.top_candidates), Path(args.candidate_dir))
         if cand is None or cand["candidate_id"] in seen:
             continue
         cand = dict(cand)
@@ -130,7 +190,8 @@ def _roi_metrics(volume: np.ndarray, truth: np.ndarray) -> dict[str, float | boo
     slope = float(polyf[0])
     r2 = float(roi["r_squared"])
     dl = float(roi["DL"])
-    invalid = bool((not np.isfinite(dl)) or slope <= 0.0 or r2 < 0.25)
+    valid = bool(roi.get("detection_limit_valid", False))
+    invalid = bool(roi.get("detection_limit_invalid", not valid))
     return {
         "roi_mean": float(np.mean(v)),
         "roi_bias": float(np.mean(v - vt)),
@@ -140,8 +201,12 @@ def _roi_metrics(volume: np.ndarray, truth: np.ndarray) -> dict[str, float | boo
         "cnr_slope": slope,
         "cnr_intercept": float(polyf[1]),
         "cnr_r_squared": r2,
+        "cnr_monotonic": bool(roi.get("cnr_monotonic", False)),
         "detection_limit_mgml": dl,
+        "detection_limit_valid": valid,
         "detection_limit_invalid": invalid,
+        "detection_limit_invalid_reason": str(roi.get("detection_limit_invalid_reason", "")),
+        "detection_limit_quality": str(roi.get("detection_limit_quality", "invalid")),
         "rmse": rmse,
         "nrmse": nrmse,
         "ssim": float("nan"),
@@ -258,17 +323,33 @@ def run_one(run: dict, protocol: str, seed: int, args: argparse.Namespace, truth
     _save_image(volume, Path(args.output_root) / "reconstruction_panels" / f"{protocol}_{run['candidate_id']}_seed{seed}.png", f"{protocol} {run['candidate_id']}")
     _save_curve(result.deviance_history, Path(args.output_root) / "convergence_curves" / f"{protocol}_{run['candidate_id']}_seed{seed}.png", "deviance", run["candidate_id"])
     _save_residual(result.residual, Path(args.output_root) / "residual_maps" / f"{protocol}_{run['candidate_id']}_seed{seed}.png", int(run.get("angle_count", 5)), run["candidate_id"])
-    sens_cv, sens_min = _sensitivity_uniformity(base_op)
-    trunc = _truncation_ratio(base_op, quick=bool(args.quick))
-    overlap = _overlap_score(base_op, truth_flat)
+    geometry_key = (
+        str(run["candidate_id"]),
+        int(run.get("angle_count", 5)),
+        bool(args.quick),
+        int(args.aperture_samples),
+        str(args.attenuation),
+    )
+    if geometry_key not in GEOMETRY_METRIC_CACHE:
+        sens_cv, sens_min = _sensitivity_uniformity(base_op)
+        GEOMETRY_METRIC_CACHE[geometry_key] = {
+            "sensitivity_uniformity_cv": sens_cv,
+            "sensitivity_min_over_mean": sens_min,
+            "fov_truncation_ratio": _truncation_ratio(base_op, quick=bool(args.quick)),
+            "overlap_score": _overlap_score(base_op, truth_flat),
+        }
+    geometry_metrics = GEOMETRY_METRIC_CACHE[geometry_key]
     metrics = _roi_metrics(volume, truth)
     metrics.update(
         {
             "protocol": protocol,
+            "protocol_source": protocol,
+            "protocol_reused_from": "",
             "run": run["candidate_id"],
             "family": run["family"],
             "seed": seed,
             "angle_count": int(run.get("angle_count", 5)),
+            "num_iterations": int(args.num_iterations),
             "hole_count": len(run["hole_centers_mm"]),
             "hole_diameter_mm": float(run["hole_diameter_mm"]),
             "total_detected_counts": float(np.sum(y)),
@@ -276,10 +357,10 @@ def run_one(run: dict, protocol: str, seed: int, args: argparse.Namespace, truth
             "estimated_dose_or_exposure_scale": float(dose_scale),
             "projection_poisson_deviance": poisson_deviance(y, result.lambda_hat),
             "residual_structure_score": residual_structure_score(result.residual),
-            "sensitivity_uniformity_cv": sens_cv,
-            "sensitivity_min_over_mean": sens_min,
-            "fov_truncation_ratio": trunc,
-            "overlap_score": overlap,
+            "sensitivity_uniformity_cv": float(geometry_metrics["sensitivity_uniformity_cv"]),
+            "sensitivity_min_over_mean": float(geometry_metrics["sensitivity_min_over_mean"]),
+            "fov_truncation_ratio": float(geometry_metrics["fov_truncation_ratio"]),
+            "overlap_score": float(geometry_metrics["overlap_score"]),
             "final_objective": float(result.objective_history[-1]),
             "final_deviance": float(result.deviance_history[-1]),
             "final_relative_change": float(result.relative_change[-1]),
@@ -322,16 +403,54 @@ def _write_summary(rows: list[dict], output_root: Path) -> None:
         "# Mask Protocol Comparison",
         "",
         "Protocols: equal acquisition time, equal incident dose, and equal detected counts.",
-        "Dose is controlled by incident exposure scale, not by detected fluorescence count.",
         "",
-        "| protocol | run | seed | counts | DL | invalid DL | ROI bias | deviance | residual structure |",
-        "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |",
+        "Counts normalization:",
+        "",
+        "- `equal_acquisition_time`: all runs use the exposure scale calibrated from `traditional_5` to the target count level; multi-hole masks are allowed to produce different detected counts through throughput.",
+        "- `equal_incident_dose`: identical to equal acquisition time in this synthetic incident-flux model; these rows are cloned from the equal-acquisition reconstruction rows and marked in `protocol_reused_from`.",
+        "- `equal_detected_counts`: each run receives its own exposure scale so expected detected counts are normalized to the requested target; conclusions from this protocol are reported separately from equal time/dose.",
+        "",
+        "DL validity uses the shared CNR quality gate from `src.reporting_roi`: finite positive-slope fit, R2 >= 0.80, monotonic CNR response, and stable background noise.",
+        "",
+        "## Aggregate Summary",
+        "",
+        "| protocol | run | family | seeds | valid DL | counts mean | valid DL mean | valid DL std | ROI bias mean | residual structure mean |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
+    groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
+        groups.setdefault((str(row["protocol"]), str(row["run"])), []).append(row)
+    for (protocol, run), group in sorted(groups.items()):
+        counts = np.asarray([float(row["total_detected_counts"]) for row in group], dtype=float)
+        valid_dl = np.asarray(
+            [float(row["detection_limit_mgml"]) for row in group if bool(row.get("detection_limit_valid", False))],
+            dtype=float,
+        )
+        bias = np.asarray([float(row["roi_bias"]) for row in group], dtype=float)
+        residual = np.asarray([float(row["residual_structure_score"]) for row in group], dtype=float)
+        valid_count = int(valid_dl.size)
+        dl_mean = float(np.mean(valid_dl)) if valid_dl.size else float("nan")
+        dl_std = float(np.std(valid_dl, ddof=1)) if valid_dl.size > 1 else 0.0 if valid_dl.size == 1 else float("nan")
+        lines.append(
+            f"| {protocol} | {run} | {group[0]['family']} | {len(group)} | {valid_count}/{len(group)} | "
+            f"{float(np.mean(counts)):.3e} | {dl_mean:.4f} | {dl_std:.4f} | "
+            f"{float(np.mean(bias)):.4f} | {float(np.mean(residual)):.4f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Seed-Level Rows",
+            "",
+            "| protocol | run | seed | counts | DL | invalid DL | ROI bias | deviance | residual structure |",
+            "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |",
+        ]
+    )
+    for row in rows:
+        invalid = row.get("detection_limit_invalid_reason", "") if bool(row.get("detection_limit_invalid", True)) else "valid"
         lines.append(
             "| {protocol} | {run} | {seed} | {total_detected_counts:.3e} | "
-            "{detection_limit_mgml:.4f} | {detection_limit_invalid} | {roi_bias:.4f} | "
-            "{projection_poisson_deviance:.3e} | {residual_structure_score:.4f} |".format(**row)
+            "{detection_limit_mgml:.4f} | {invalid} | {roi_bias:.4f} | "
+            "{projection_poisson_deviance:.3e} | {residual_structure_score:.4f} |".format(invalid=invalid, **row)
         )
     output_root.joinpath("protocol_summary.md").write_text("\n".join(lines), encoding="utf-8")
     _save_cnr_curves(rows, output_root)
@@ -346,6 +465,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--protocols", default="equal_acquisition_time,equal_incident_dose,equal_detected_counts")
     parser.add_argument("--recon-methods", default="poisson_tv", help="Currently supports poisson_tv; EM-TV remains available in run_effect_comparison.py.")
     parser.add_argument("--matrix-mode", choices=["explicit", "matrix_free", "auto"], default="matrix_free")
+    parser.add_argument("--candidate-dir", default=str(CANDIDATE_DIR))
+    parser.add_argument("--top-candidates", default=str(TOP_CANDIDATES))
+    parser.add_argument("--pareto-candidates", default=str(PARETO_CANDIDATES))
+    parser.add_argument(
+        "--candidate-ids",
+        default="",
+        help="Comma-separated corrected mask candidate IDs. Traditional baselines are always included.",
+    )
     parser.add_argument("--output-root", default=str(OUTPUT_ROOT))
     parser.add_argument("--num-iterations", type=int, default=20)
     parser.add_argument("--beta", type=float, default=1.0e-4)
@@ -370,13 +497,27 @@ def main() -> None:
     base_exposure = float(args.target_counts) / max(float(np.sum(lam_trad5)), EPS)
     runs = _select_runs(args)
     protocols = [item.strip() for item in str(args.protocols).split(",") if item.strip()]
+    reuse_equal_incident = "equal_acquisition_time" in protocols and "equal_incident_dose" in protocols
+    computed_protocols = [protocol for protocol in protocols if not (reuse_equal_incident and protocol == "equal_incident_dose")]
     rows: list[dict] = []
-    for protocol in protocols:
+    for protocol in computed_protocols:
         for run in runs:
             for seed_idx in range(int(args.num_seeds)):
                 seed = int(args.seed) + seed_idx
                 print(f"{protocol}: {run['candidate_id']} seed={seed}")
                 rows.append(run_one(run, protocol, seed, args, truth, base_exposure, float(args.target_counts)))
+    if reuse_equal_incident:
+        cloned = []
+        for row in rows:
+            if row["protocol"] == "equal_acquisition_time":
+                clone = dict(row)
+                clone["protocol"] = "equal_incident_dose"
+                clone["protocol_source"] = "equal_acquisition_time"
+                clone["protocol_reused_from"] = "equal_acquisition_time"
+                cloned.append(clone)
+        rows.extend(cloned)
+        order = {protocol: index for index, protocol in enumerate(protocols)}
+        rows.sort(key=lambda row: (order.get(str(row["protocol"]), 999), str(row["run"]), int(row["seed"])))
     _write_summary(rows, output_root)
     print(f"Protocol summary: {output_root / 'protocol_summary.csv'}")
 

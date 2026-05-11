@@ -102,18 +102,67 @@ class PoissonTVResult:
     lambda_hat: np.ndarray
     residual: np.ndarray
     params: dict[str, Any]
+    diagnostics: dict[str, Any]
 
 
-def _roi_summary(volume: np.ndarray, recon_shape: tuple[int, int, int], slice_index: int, roi_layout: str) -> dict[str, float]:
+def _roi_summary(volume: np.ndarray, recon_shape: tuple[int, int, int], slice_index: int, roi_layout: str) -> dict[str, Any]:
     roi = roi_analysis(volume, slice_index=slice_index, recon_size=recon_shape, roi_layout=roi_layout)
     polyf = np.asarray(roi["polyf"], dtype=float)
     return {
         "detection_limit_mgml": float(roi["DL"]),
+        "detection_limit_valid": bool(roi.get("detection_limit_valid", False)),
+        "detection_limit_invalid": bool(roi.get("detection_limit_invalid", True)),
+        "detection_limit_invalid_reason": str(roi.get("detection_limit_invalid_reason", "")),
         "roi_r_squared": float(roi["r_squared"]),
         "cnr_slope": float(polyf[0]),
         "cnr_intercept": float(polyf[1]),
         "roi_mean_0": float(np.asarray(roi["V"], dtype=float)[0]),
         "roi_mean_5": float(np.asarray(roi["V"], dtype=float)[5]),
+    }
+
+
+def _history_diagnostics(
+    *,
+    reconstruction: np.ndarray,
+    lambda_hat: np.ndarray,
+    objective_history: np.ndarray,
+    deviance_history: np.ndarray,
+    relative_change: np.ndarray,
+) -> dict[str, Any]:
+    objective = np.asarray(objective_history, dtype=np.float64)
+    deviance = np.asarray(deviance_history, dtype=np.float64)
+    rel = np.asarray(relative_change, dtype=np.float64)
+    finite_objective = bool(np.all(np.isfinite(objective)))
+    finite_deviance = bool(np.all(np.isfinite(deviance)))
+    finite_relative_change = bool(np.all(np.isfinite(rel)))
+    finite_lambda = bool(np.all(np.isfinite(lambda_hat)))
+    positive_lambda = bool(np.all(np.asarray(lambda_hat) > 0.0))
+    nonnegative_reconstruction = bool(np.min(reconstruction) >= -1.0e-12)
+    if objective.size >= 2 and finite_objective:
+        deltas = np.diff(objective)
+        increases = deltas > 1.0e-8 * np.maximum(np.abs(objective[:-1]), 1.0)
+        max_rel_increase = float(
+            np.max(deltas / np.maximum(np.abs(objective[:-1]), 1.0))
+        )
+        objective_nonmonotone_steps = int(np.sum(increases))
+    else:
+        max_rel_increase = 0.0
+        objective_nonmonotone_steps = 0
+    return {
+        "finite_objective": finite_objective,
+        "finite_deviance": finite_deviance,
+        "finite_relative_change": finite_relative_change,
+        "finite_lambda": finite_lambda,
+        "positive_lambda": positive_lambda,
+        "nonnegative_reconstruction": nonnegative_reconstruction,
+        "objective_nonmonotone_steps": objective_nonmonotone_steps,
+        "objective_max_relative_increase": max_rel_increase,
+        "final_relative_change": float(rel[-1]) if rel.size else float("nan"),
+        "objective_behavior": (
+            "monotone"
+            if objective_nonmonotone_steps == 0
+            else "nonmonotone; PDHG objectives can increase, see recorded max relative increase"
+        ),
     }
 
 
@@ -207,13 +256,34 @@ def run_poisson_tv_pdhg(
         objective_history[iteration] = data_obj + tv_obj
         deviance_history[iteration] = poisson_deviance(y, safe_lam, eps=eps)
         relative_change[iteration] = float(np.linalg.norm(f - f_old) / (np.linalg.norm(f_old) + EPS))
+        if not np.all(np.isfinite(lam)):
+            raise FloatingPointError(f"Non-finite lambda at iteration {iteration + 1}.")
+        if not np.isfinite(objective_history[iteration]):
+            raise FloatingPointError(f"Non-finite objective at iteration {iteration + 1}.")
+        if not np.isfinite(deviance_history[iteration]):
+            raise FloatingPointError(f"Non-finite deviance at iteration {iteration + 1}.")
+        if not np.isfinite(relative_change[iteration]):
+            raise FloatingPointError(f"Non-finite relative change at iteration {iteration + 1}.")
+        if np.min(f) < -1.0e-12:
+            raise FloatingPointError(f"Negative reconstruction value at iteration {iteration + 1}.")
         if roi_every > 0 and (iteration % int(roi_every) == 0 or iteration == int(num_iterations) - 1):
             item = _roi_summary(f.reshape(recon_shape), recon_shape, slice_index, roi_layout)
             item["iteration"] = float(iteration + 1)
             roi_history.append(item)
 
     lambda_hat = _forward(A, f, support_mode=support_mode) + b
+    if not np.all(np.isfinite(lambda_hat)):
+        raise FloatingPointError("Non-finite final lambda.")
+    if np.min(lambda_hat) <= 0.0:
+        raise FloatingPointError("Final lambda must be strictly positive after background.")
     resid = residual_map(y, lambda_hat, eps=eps)
+    diagnostics = _history_diagnostics(
+        reconstruction=f.reshape(recon_shape),
+        lambda_hat=lambda_hat,
+        objective_history=objective_history,
+        deviance_history=deviance_history,
+        relative_change=relative_change,
+    )
     return PoissonTVResult(
         reconstruction=f.reshape(recon_shape),
         objective_history=objective_history,
@@ -233,4 +303,5 @@ def run_poisson_tv_pdhg(
             "roi_layout": roi_layout,
             "slice_index": int(slice_index),
         },
+        diagnostics=diagnostics,
     )

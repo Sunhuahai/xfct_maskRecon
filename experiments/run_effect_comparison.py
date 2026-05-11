@@ -320,6 +320,7 @@ def _run_method(
 
     roi = result["roi"]
     summary = result["summary"]
+    dl_valid = bool(roi.get("detection_limit_valid", False))
     return {
         "run": spec.name,
         "method": method,
@@ -328,7 +329,17 @@ def _run_method(
         "projection_sum": float(np.sum(projection)),
         "projection_max": float(np.max(projection)),
         "detection_limit_mgml": float(roi["DL"]),
+        "detection_limit_valid": dl_valid,
+        "detection_limit_invalid": bool(not dl_valid),
+        "detection_limit_invalid_reason": str(
+            roi.get("detection_limit_invalid_reason", "missing quality check")
+        ),
         "roi_r_squared": float(roi["r_squared"]),
+        "cnr_slope": float(roi.get("cnr_slope", np.nan)),
+        "cnr_intercept": float(roi.get("cnr_intercept", np.nan)),
+        "cnr_monotonic": bool(roi.get("cnr_monotonic", False)),
+        "background_mean": float(roi.get("background_mean", np.nan)),
+        "background_std": float(roi.get("background_std", np.nan)),
         "final_nll": float(summary["final_nll"]),
         "final_rel": float(summary["final_rel"]),
         "projection_path": str(projection_path),
@@ -352,14 +363,21 @@ def _write_summary(rows: list[dict[str, str | float]], output_root: Path) -> Non
     lines = [
         "# Mask Reconstruction Effect Comparison",
         "",
-        "| run | method | angles | decode | DL (mg/ml) | R2 | counts | note |",
-        "| --- | --- | ---: | --- | ---: | ---: | ---: | --- |",
+        "| run | method | angles | decode | DL status | R2 | counts | note |",
+        "| --- | --- | ---: | --- | --- | ---: | ---: | --- |",
     ]
     for row in rows:
+        if bool(row.get("detection_limit_valid", False)):
+            dl_status = f"valid {float(row['detection_limit_mgml']):.4f} mg/ml"
+        else:
+            dl_status = (
+                f"invalid; raw={float(row['detection_limit_mgml']):.4f}; "
+                f"{row.get('detection_limit_invalid_reason', 'failed quality check')}"
+            )
         lines.append(
             "| {run} | {method} | {angle_count:.0f} | {decode} | "
-            "{detection_limit_mgml:.4f} | {roi_r_squared:.4f} | "
-            "{projection_sum:.4e} | {note} |".format(**row)
+            "{dl_status} | {roi_r_squared:.4f} | "
+            "{projection_sum:.4e} | {note} |".format(dl_status=dl_status, **row)
         )
     lines.append("")
     lines.append(f"CSV: `{csv_path}`")
@@ -377,8 +395,13 @@ def _save_panel(rows: list[dict[str, str | float]], output_root: Path) -> None:
         volume = np.load(str(row["volume_path"]))
         image = volume[20]
         im = axis.imshow(image, cmap="jet", origin="upper", vmin=0.0, vmax=3.0)
+        dl_label = (
+            f"DL={float(row['detection_limit_mgml']):.3f}"
+            if bool(row.get("detection_limit_valid", False))
+            else "DL invalid"
+        )
         axis.set_title(
-            f"{row['run']} / {row['method']}\nDL={row['detection_limit_mgml']:.3f}"
+            f"{row['run']} / {row['method']}\n{dl_label}"
         )
         axis.set_xlabel("Y")
         axis.set_ylabel("X")
@@ -465,9 +488,14 @@ def main() -> None:
                 args=args,
             )
             rows.append(row)
+            dl_status = (
+                f"DL={row['detection_limit_mgml']:.4f}"
+                if bool(row.get("detection_limit_valid", False))
+                else f"DL invalid ({row['detection_limit_invalid_reason']})"
+            )
             print(
                 f"{spec.name}/{method}: "
-                f"DL={row['detection_limit_mgml']:.4f}, "
+                f"{dl_status}, "
                 f"R2={row['roi_r_squared']:.4f}, "
                 f"counts={row['projection_sum']:.4e}"
             )

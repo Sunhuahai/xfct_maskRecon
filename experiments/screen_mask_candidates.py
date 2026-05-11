@@ -48,9 +48,11 @@ def _json_default(obj):
     raise TypeError(type(obj).__name__)
 
 
-def _angle_sets(quick: bool) -> dict[str, tuple[int, ...]]:
+def _angle_sets(quick: bool, phase_count_override: int | None = None) -> dict[str, tuple[int, ...]]:
     sets = {"phase0_default": (0, 9, 18, 27, 36)}
     phase_count = 4 if quick else 9
+    if phase_count_override is not None:
+        phase_count = max(0, int(phase_count_override))
     for phase in range(1, phase_count + 1):
         sets[f"phase{phase}"] = tuple((phase + 9 * k) % 45 for k in range(5))
     return sets
@@ -256,6 +258,7 @@ def screen_one(
         "hole_diameter_mm": float(candidate["hole_diameter_mm"]),
         "min_distance_mm": float(candidate["min_distance_mm"]),
         "total_open_area_mm2": float(candidate["total_open_area_mm2"]),
+        "support_mode": "physical_padded",
         "angle_set": angle_name,
         "angle_indices": ",".join(str(v) for v in angle_indices),
         "throughput_detection_phantom": float(np.sum(lam_detection)),
@@ -352,22 +355,280 @@ def _save_ranking_plots(rows: list[dict], output_root: Path) -> None:
     plt.close(fig)
 
 
-def _write_outputs(rows: list[dict], top_payload: dict, output_root: Path) -> None:
-    csv_path = output_root / "candidate_screening.csv"
+def _float(row: dict, key: str, default: float = float("nan")) -> float:
+    try:
+        return float(row.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _dominates(left: dict, right: dict) -> bool:
+    maximize = ("task_fisher_d2_mean", "sensitivity_min_over_mean")
+    minimize = (
+        "task_crlb_mean",
+        "roi_truncation_physical_mean",
+        "overlap_max",
+        "roi_coherence_p95",
+        "sensitivity_cv",
+    )
+    better_or_equal = True
+    strictly_better = False
+    for key in maximize:
+        lv = _float(left, key, -np.inf)
+        rv = _float(right, key, -np.inf)
+        better_or_equal &= lv >= rv
+        strictly_better |= lv > rv
+    for key in minimize:
+        lv = _float(left, key, np.inf)
+        rv = _float(right, key, np.inf)
+        better_or_equal &= lv <= rv
+        strictly_better |= lv < rv
+    return bool(better_or_equal and strictly_better)
+
+
+def _pareto_front(rows: list[dict]) -> list[dict]:
+    front = []
+    for row in rows:
+        if not any(_dominates(other, row) for other in rows if other is not row):
+            front.append(row)
+    return sorted(front, key=lambda r: _float(r, "ranking_score"), reverse=True)
+
+
+def _row_summary(row: dict, *, role: str, reason: str) -> dict:
+    keys = [
+        "candidate_id",
+        "family",
+        "hole_count",
+        "hole_diameter_mm",
+        "min_distance_mm",
+        "total_open_area_mm2",
+        "support_mode",
+        "angle_set",
+        "angle_indices",
+        "sensitivity_mean",
+        "sensitivity_cv",
+        "roi_sensitivity_mean",
+        "roi_sensitivity_cv",
+        "global_truncation_physical_mean",
+        "global_truncation_physical_p95",
+        "roi_truncation_physical_mean",
+        "roi_truncation_physical_p95",
+        "overlap_mean",
+        "overlap_max",
+        "global_coherence_max",
+        "roi_coherence_max",
+        "roi_coherence_p95",
+        "task_fisher_d2_mean",
+        "task_fisher_d2_min",
+        "task_crlb_mean",
+        "task_crlb_max",
+        "throughput_detection_phantom",
+        "ranking_score",
+        "json_path",
+        "comments",
+    ]
+    out = {key: row.get(key) for key in keys}
+    out["role"] = role
+    out["selection_reason"] = reason
+    return out
+
+
+def _select_pareto_payload(rows: list[dict], max_primary: int) -> dict:
+    default_rows = [r for r in rows if r.get("angle_set") == "phase0_default"] or rows
+    by_id = {str(r["candidate_id"]): r for r in default_rows}
+    baselines = []
+    primary = []
+    selected_ids: set[str] = set()
+
+    def add(row: dict | None, role: str, reason: str, target: list[dict]) -> None:
+        if row is None:
+            return
+        cid = str(row["candidate_id"])
+        if cid in selected_ids:
+            return
+        selected_ids.add(cid)
+        target.append(_row_summary(row, role=role, reason=reason))
+
+    add(by_id.get("single_center_n1_d1d25_mind0"), "baseline", "single-center pinhole anchor", baselines)
+    add(by_id.get("grid3x3_n9_d1d25_mind6"), "baseline", "corrected grid9 geometry anchor", baselines)
+    add(
+        by_id.get("blue_noise_n3_d1d25_mind3_s1"),
+        "primary",
+        "specified blue-noise anchor from the Stage 2 prompt",
+        primary,
+    )
+
+    five_hole_blue = [
+        r
+        for r in default_rows
+        if r.get("family") == "blue_noise"
+        and int(r.get("hole_count", 0)) == 5
+        and abs(_float(r, "hole_diameter_mm") - 1.25) < 1.0e-9
+    ]
+    if five_hole_blue:
+        add(
+            min(five_hole_blue, key=lambda r: (_float(r, "overlap_max"), _float(r, "roi_coherence_p95"))),
+            "primary",
+            "lowest-overlap 5-hole blue-noise candidate at 1.25 mm diameter",
+            primary,
+        )
+
+    ring_rows = [
+        r
+        for r in default_rows
+        if str(r.get("family")) in {"ring", "ring_two"}
+        and abs(_float(r, "hole_diameter_mm") - 1.25) < 1.0e-9
+    ]
+    if ring_rows:
+        add(
+            min(
+                ring_rows,
+                key=lambda r: (
+                    _float(r, "roi_truncation_physical_mean"),
+                    _float(r, "global_truncation_physical_mean"),
+                    -_float(r, "task_fisher_d2_mean"),
+                ),
+            ),
+            "primary",
+            "lowest physical-truncation ring/ring_two candidate at 1.25 mm diameter",
+            primary,
+        )
+
+    front = _pareto_front(default_rows)
+    for row in front:
+        if len(primary) >= int(max_primary):
+            break
+        if row.get("family") == "single_center" or row.get("family") == "grid3x3":
+            continue
+        add(row, "primary", "non-dominated Pareto-front candidate", primary)
+
+    return {
+        "support_mode": "physical_padded",
+        "selection_note": (
+            "Candidate rankings are design-screening hypotheses for later explicit matrix generation "
+            "and reconstruction; they are not final reconstruction conclusions."
+        ),
+        "primary_candidate_limit": int(max_primary),
+        "baselines": baselines,
+        "primary_candidates": primary[: int(max_primary)],
+        "pareto_front_count": len(front),
+        "pareto_front_candidate_ids": [str(row["candidate_id"]) for row in front],
+        "pareto_objectives": {
+            "maximize": ["task_fisher_d2_mean", "sensitivity_min_over_mean"],
+            "minimize": [
+                "task_crlb_mean",
+                "roi_truncation_physical_mean",
+                "overlap_max",
+                "roi_coherence_p95",
+                "sensitivity_cv",
+            ],
+        },
+    }
+
+
+def _write_screening_report(
+    rows: list[dict],
+    pareto_payload: dict,
+    output_root: Path,
+    report_name: str,
+    *,
+    csv_name: str,
+    top_json_name: str,
+    pareto_json_name: str,
+) -> None:
+    default_rows = [r for r in rows if r.get("angle_set") == "phase0_default"] or rows
+    top_rows = sorted(default_rows, key=lambda r: _float(r, "ranking_score"), reverse=True)[:10]
+    shortlist = list(pareto_payload.get("baselines", [])) + list(pareto_payload.get("primary_candidates", []))
+    lines = [
+        "# Corrected Physical-Support Candidate Screening",
+        "",
+        "Screening support mode: `physical_padded` true physical 80 x 80 detector support embedded in the 80 x 160 padded detector.",
+        "",
+        "Candidate rankings are design-screening hypotheses for later explicit matrix generation and full reconstruction; they are not final reconstruction conclusions.",
+        "",
+        "The combined ranking score is not throughput-only. It combines task Fisher information with penalties for physical detector truncation, isolated-hole footprint overlap, weighted coherence, and sensitivity nonuniformity.",
+        "",
+        "## Shortlist",
+        "",
+        "| role | candidate | family | holes | sensitivity mean | sensitivity CV | ROI sensitivity mean | trunc mean/p95 | overlap mean/max | coherence max | task Fisher d2 | task CRLB | reason |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    for row in shortlist:
+        lines.append(
+            "| {role} | `{candidate_id}` | {family} | {hole_count} | {sensitivity_mean:.6e} | "
+            "{sensitivity_cv:.4f} | {roi_sensitivity_mean:.6e} | {roi_truncation_physical_mean:.4f}/{roi_truncation_physical_p95:.4f} | "
+            "{overlap_mean:.4f}/{overlap_max:.4f} | {roi_coherence_max:.4f} | {task_fisher_d2_mean:.6e} | "
+            "{task_crlb_mean:.4f} | {selection_reason} |".format(**row)
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Ranking Rows",
+            "",
+            "| rank | candidate | family | holes | score | Fisher d2 | CRLB | trunc mean | overlap max | ROI coherence p95 | sensitivity CV | throughput |",
+            "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for rank, row in enumerate(top_rows, start=1):
+        lines.append(
+            f"| {rank} | `{row['candidate_id']}` | {row['family']} | {row['hole_count']} | "
+            f"{_float(row, 'ranking_score'):.4f} | {_float(row, 'task_fisher_d2_mean'):.6e} | "
+            f"{_float(row, 'task_crlb_mean'):.4f} | {_float(row, 'roi_truncation_physical_mean'):.4f} | "
+            f"{_float(row, 'overlap_max'):.4f} | {_float(row, 'roi_coherence_p95'):.4f} | "
+            f"{_float(row, 'sensitivity_cv'):.4f} | {_float(row, 'throughput_detection_phantom'):.4e} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Artifacts",
+            "",
+            f"- Corrected CSV: `{output_root / csv_name}`",
+            f"- Pareto JSON: `{output_root / pareto_json_name}`",
+            f"- Full top-candidate diagnostics: `{output_root / top_json_name}`",
+        ]
+    )
+    (output_root / report_name).write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_outputs(
+    rows: list[dict],
+    top_payload: dict,
+    pareto_payload: dict,
+    output_root: Path,
+    *,
+    csv_name: str,
+    top_json_name: str,
+    pareto_json_name: str,
+    report_name: str,
+) -> None:
+    csv_path = output_root / csv_name
     if rows:
         fieldnames = list(rows[0].keys())
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
-    (output_root / "top_candidates.json").write_text(
+    (output_root / top_json_name).write_text(
         json.dumps(top_payload, indent=2, default=_json_default),
         encoding="utf-8",
     )
+    (output_root / pareto_json_name).write_text(
+        json.dumps(pareto_payload, indent=2, default=_json_default),
+        encoding="utf-8",
+    )
+    _write_screening_report(
+        rows,
+        pareto_payload,
+        output_root,
+        report_name,
+        csv_name=csv_name,
+        top_json_name=top_json_name,
+        pareto_json_name=pareto_json_name,
+    )
 
 
-def _validation_warning() -> str:
-    summary_path = PROJECT_ROOT / "results" / "forward_model_validation" / "validation_summary.json"
+def _validation_warning(summary_path: str | Path) -> str:
+    summary_path = Path(summary_path)
     if not summary_path.exists():
         return "Forward validation summary not found; screening rankings are provisional."
     try:
@@ -390,6 +651,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--matrix-mode", choices=["explicit", "matrix_free", "auto"], default="matrix_free")
     parser.add_argument("--candidate-dir", default=str(DEFAULT_CANDIDATE_DIR))
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
+    parser.add_argument(
+        "--validation-summary",
+        default=str(PROJECT_ROOT / "results" / "forward_model_validation" / "validation_summary.json"),
+        help="Validation summary JSON used to label screening provenance.",
+    )
+    parser.add_argument(
+        "--angle-phase-count",
+        type=int,
+        default=None,
+        help="Number of additional shifted 5-view angle phases beyond phase0_default. Default is 4 quick or 9 full.",
+    )
+    parser.add_argument("--screening-csv-name", default="candidate_screening.csv")
+    parser.add_argument("--top-json-name", default="top_candidates.json")
+    parser.add_argument("--pareto-json-name", default="pareto_candidates.json")
+    parser.add_argument("--screening-report-name", default="screening_report.md")
+    parser.add_argument("--max-primary-candidates", type=int, default=5)
     parser.add_argument("--aperture-samples", type=int, default=8)
     parser.add_argument("--attenuation", choices=["none", "pmma"], default="pmma")
     parser.add_argument("--background", type=float, default=1.0e-6)
@@ -415,8 +692,8 @@ def main() -> None:
     }
     rows: list[dict] = []
     artifacts_by_key: dict[tuple[str, str], dict[str, np.ndarray]] = {}
-    angle_sets = _angle_sets(bool(args.quick))
-    warning = _validation_warning()
+    angle_sets = _angle_sets(bool(args.quick), args.angle_phase_count)
+    warning = _validation_warning(args.validation_summary)
     print(warning)
     for cand_idx, candidate in enumerate(candidates, start=1):
         print(f"[{cand_idx}/{len(candidates)}] screening {candidate['candidate_id']}")
@@ -440,7 +717,17 @@ def main() -> None:
     for row in top_rows:
         top_payload["top_by_family"].setdefault(row["family"], row)
         top_payload["top_by_hole_count"].setdefault(str(row["hole_count"]), row)
-    _write_outputs(rows, top_payload, output_root)
+    pareto_payload = _select_pareto_payload(rows, max_primary=int(args.max_primary_candidates))
+    _write_outputs(
+        rows,
+        top_payload,
+        pareto_payload,
+        output_root,
+        csv_name=str(args.screening_csv_name),
+        top_json_name=str(args.top_json_name),
+        pareto_json_name=str(args.pareto_json_name),
+        report_name=str(args.screening_report_name),
+    )
 
     for rank, row in enumerate(top_rows[: min(5, len(top_rows))], start=1):
         key = (row["candidate_id"], "phase0_default")
@@ -465,8 +752,9 @@ def main() -> None:
         )
     _save_ranking_plots(rows, output_root)
     print(f"Screened {len(candidates)} candidates across {len(angle_sets)} angle sets.")
-    print(f"CSV: {output_root / 'candidate_screening.csv'}")
-    print(f"Top candidates: {output_root / 'top_candidates.json'}")
+    print(f"CSV: {output_root / args.screening_csv_name}")
+    print(f"Pareto candidates: {output_root / args.pareto_json_name}")
+    print(f"Top candidates: {output_root / args.top_json_name}")
 
 
 if __name__ == "__main__":
